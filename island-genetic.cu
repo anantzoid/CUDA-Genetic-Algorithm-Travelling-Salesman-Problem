@@ -1,125 +1,34 @@
 #include <stdio.h>
+#include <stdlib.h>
 #include <curand_kernel.h>
 #include <time.h>
 #include <cuda_runtime.h>
-
-const int GENERATIONS = 1;
-
-const int CHECK_VALUES_EVERY = 1;
-const int SHOW_ALL_VALUES = 0;
-const int SKIP_CUDA_DEVICE = false;
-
-
-const int ISLANDS_PER_ROW = 4;
-const int GENOME_LENGTH=4;
-const int BLOCKS_PER_ROW = 16;
-const int ISLAND_POPULATION=5;
-const int SELECTION_COUNT= 4;
-const float MUTATION_CHANCE= 0.8;
-const int MAX_CONFIG_VAL = 20;
-
-
-unsigned int thandle; 
-
-bool IsGpuAvailable()
-{
-    int devicesCount;
-  bool skip = SKIP_CUDA_DEVICE;
-    cudaGetDeviceCount(&devicesCount);
-    for(int deviceIndex = 0; deviceIndex < devicesCount; ++deviceIndex)
-    {
-        cudaDeviceProp deviceProperties;
-        cudaGetDeviceProperties(&deviceProperties, deviceIndex);
-        if (deviceProperties.major >= 2
-            && deviceProperties.minor >= 0)
-        {
-      if(skip) {
-        skip = false;
-        continue;
-      }
-            cudaSetDevice(deviceIndex);
-            return true;
-        }
-    }
-
-    return false;
-}
-
-
-__device__ void
-sortByFitness(float*populationFitness, unsigned char* sortedAssoc, float* totalFitness)
-{
-    int i, j;
-    *totalFitness = 1;
-    float phenotypeFitness = 0;
-    for ( i = 0; i < ISLAND_POPULATION; ++i ){
-        sortedAssoc[i] = i;
-        phenotypeFitness = populationFitness[i];
-        for (
-                j = i;
-                j > 0 && populationFitness[sortedAssoc[j - 1]] > phenotypeFitness;
-                j-- )
-        {
-            sortedAssoc[j] = sortedAssoc[j - 1];
-        }
-        sortedAssoc[j] = i;
-    }
-}
-
-__device__ void
-normalizeFitness(float*populationFitness, unsigned char* sortedAssoc, float totalFitness)
-{
-    int i, j;
-    float lastFitness = 0;
-    for ( i = 0; i < ISLAND_POPULATION; ++i ){
-        j = sortedAssoc[i];
-        lastFitness += populationFitness[j];
-        populationFitness[j] = lastFitness/totalFitness;
-    }
-}
-
-__device__ void
-selectionTrunc(unsigned char* sortedAssoc, unsigned char* selectedAssoc)
-{
-    for(int i = 1; i <= SELECTION_COUNT; i++) {
-        selectedAssoc[i-1] = sortedAssoc[ISLAND_POPULATION - i];
-    }
-}
-
-__global__ void primeKernel(int* prime_d, int n) {
-    int i = threadIdx.x+ blockIdx.x * blockDim.x;
-
-    for(int b = 2; b <= (i+1)/2; b++){
-        if (i%b ==0){
-            prime_d[i] = -1;
-            break;
-        }
-    }
-}
+#include <string.h>
+#include <math.h>
+#include "constants.c"
+#include "utils.h"
 
 __device__ float
-computeFitnessValue( unsigned char *populationRow, float*populationFitness, int* prime_d, int n)
+computeFitnessValue( unsigned char *populationRow, float*populationFitness)
 {
+    cudaEvent_t start, stop;
+    float elapsedTime;
     float max = 0;
-    //cutCreateTimer(&thandle);
-    for(int i = 0; i < ISLAND_POPULATION; i++ ) {
-        //cutStartTimer(thandle);
-        primeKernel<<<1, 8>>>(prime_d, n);
-        //cutStopTimer(thandle);
-        populationFitness[i] = i;//cutGetTimerValue(thandle);
+
+    for(int i = 0; i < num_chromosomes; i++ ) {
+        populationFitness[i] = i;
         if( populationFitness[i] > max) {
             max = populationFitness[i];
         }
     }
     return max;
-
 }
 
 __device__ void
 crossover(
         unsigned char *populationRow,
         unsigned char *newPopulation,
-        unsigned char *selectedPopulation,
+        float *selectedPopulation,
         curandState_t *randomState)
 {
     int i,j;
@@ -127,22 +36,22 @@ crossover(
         selectedPhenotypeA,
         selectedPhenotypeB;
     int treshold = 0;
-    for( i = 0; i < ISLAND_POPULATION; i++) {
+    for( i = 0; i < num_chromosomes; i++) {
 
-        selectedPhenotypeA = selectedPopulation[ curand(randomState) % SELECTION_COUNT ];
-        selectedPhenotypeB = selectedPopulation[ curand(randomState) % SELECTION_COUNT ];
+        selectedPhenotypeA = selectedPopulation[ curand(randomState) % num_chromosomes ];
+        selectedPhenotypeB = selectedPopulation[ curand(randomState) % num_chromosomes ];
 
-        treshold = curand(randomState) % GENOME_LENGTH;
+        treshold = curand(randomState) % chromosome_size;
 
-        for(j = 0; j < GENOME_LENGTH; j++) {
+        for(j = 0; j < chromosome_size; j++) {
             if(j < treshold) {
                 selectedPhenotype = selectedPhenotypeA;
             } else {
                 selectedPhenotype = selectedPhenotypeB;
             }
 
-            newPopulation[i * GENOME_LENGTH + j] =
-                    populationRow[selectedPhenotype * GENOME_LENGTH];
+            newPopulation[i * chromosome_size + j] =
+                    populationRow[selectedPhenotype * chromosome_size];
         }
     }
 }
@@ -154,9 +63,9 @@ mutation(
 {
     int i;
 
-    for( i = 0; i < ISLAND_POPULATION; i++) {
-        if(curand_uniform(randomState) < MUTATION_CHANCE) {
-            newPopulation[ i* GENOME_LENGTH + (curand(randomState) % GENOME_LENGTH ) ]
+    for( i = 0; i < num_chromosomes; i++) {
+        if(curand_uniform(randomState) < mutation_ratio) {
+            newPopulation[ i* chromosome_size + (curand(randomState) % chromosome_size ) ]
                            = curand(randomState) % MAX_CONFIG_VAL;
         }
     }
@@ -170,50 +79,32 @@ killPreviousPopulation(
 {
     int i;
 
-    for( i = 0; i < ISLAND_POPULATION * GENOME_LENGTH; i++) {
+    for( i = 0; i < num_chromosomes * chromosome_size; i++) {
         populationRow[i] = newPopulation[i];
     }
 }
 
 
-__global__ void
-geneticAlgorithmGeneration(
-    curandState_t* states, 
-    unsigned char *population,
-    float* bestValues, int* prime_d, int n
-) 
-{
+__global__ void geneticAlgorithmGeneration(curandState_t* states, unsigned char *population, float* bestValues) {
 
     //index of the island itself
     int island_y = blockDim.y * blockIdx.y + threadIdx.y;
     int island_x = blockDim.x * blockIdx.x + threadIdx.x;
 
-    unsigned char * populationRow = &population[island_y * GENOME_LENGTH * ISLAND_POPULATION * ISLANDS_PER_ROW + island_x * GENOME_LENGTH * ISLAND_POPULATION ];
+    unsigned char * populationRow = &population[island_y * chromosome_size * num_chromosomes * num_islands + island_x * chromosome_size * num_chromosomes ];
 
     __shared__ curandState_t randomState;
 
     randomState = states[blockDim.x*blockDim.y];
 
-    float populationFitness[ISLAND_POPULATION];
+    float populationFitness[num_chromosomes];
 
-    float best = computeFitnessValue(
-            populationRow,
-            populationFitness, prime_d, n
-            );
+    float best = computeFitnessValue(populationRow, populationFitness);
 
-    bestValues[island_y * ISLANDS_PER_ROW + island_x] = best;
+    bestValues[island_y * num_islands + island_x] = best;
 
-    unsigned char sortAssoc[ISLAND_POPULATION];
-    float totalFitness;
-
-    sortByFitness(populationFitness, sortAssoc, &totalFitness);
-    //normalizeFitness(populationFitness, sortAssoc, totalFitness);
-
-    unsigned char selectedAssoc[SELECTION_COUNT];
-    selectionTrunc(sortAssoc, selectedAssoc);
-
-    unsigned char  newPopulation[ISLAND_POPULATION*GENOME_LENGTH];
-    crossover(populationRow, newPopulation, selectedAssoc, &randomState);
+    unsigned char  newPopulation[num_chromosomes*chromosome_size];
+    crossover(populationRow, newPopulation, populationFitness, &randomState);
     mutation(newPopulation, &randomState);
     killPreviousPopulation(populationRow, newPopulation);
 }
@@ -238,72 +129,80 @@ __global__ void randomizePopulation(curandState_t* states, unsigned char* popula
     __shared__ curandState_t randomState;
     randomState = states[blockDim.y * blockIdx.y ];
 
-    unsigned char * populationRow = &population[island_y * GENOME_LENGTH * ISLAND_POPULATION * ISLANDS_PER_ROW + island_x * GENOME_LENGTH * ISLAND_POPULATION ];
+    unsigned char * populationRow = &population[island_y * chromosome_size * num_chromosomes * num_islands + island_x * chromosome_size * num_chromosomes ];
 
-    for(int i = 0; i < GENOME_LENGTH * ISLAND_POPULATION; i++) {
+    for(int i = 0; i < chromosome_size * num_chromosomes; i++) {
         populationRow[i] = curand(&randomState) % MAX_CONFIG_VAL;
     };
 }
 
-/**
- * Host main routine
- */
-int
-main(void)
-{
-    if(!IsGpuAvailable()) {
-        fprintf(stderr, "Cuda Device is not avaliable!\n");
-        exit(EXIT_FAILURE);
-    }
-    
+int main() {
+   
     cudaError_t err = cudaSuccess;
 
-    /*************************
-    *************************
-    * Child Kernel memory part
-    *************************
-    *************************/
-    int n = 10;  
-    int prime[n+1];
-    //Loading the array with numbers from 1 to n
-    for(int i = 1; i <= n; i++) {
-        prime[i] = i;
+    int ISLANDS = num_islands * num_islands * num_blocks * num_blocks;
+
+    // coordinates of cities
+    //ag: tour_t members
+    float city_x[num_cities];
+    float city_y[num_cities];
+    float city_n[num_cities];
+    int local_fitness = 0;
+    int distance = 0;
+    int max_val = 250;
+
+    //ag: costTable
+    float fitness[num_cities*num_cities];
+
+    //2. init population
+   
+    // read initial tour from file 
+    FILE* fp; 
+    fp = fopen("berlin52.txt", "r");
+    char* line = NULL;
+    size_t len = 0;
+    char* tokens;
+    ssize_t read;
+     while ((read = getline(&line, &len, fp)) != -1) {
+        tokens = strtok(line, " ");
+        int n = (int)tokens[0]-1;
+        city_x[n] = (float)tokens[1]; 
+        city_y[n] = (float)tokens[2]; 
+     }
+    
+     //building cost table
+     for(int i=0; i<num_cities; i++) {
+         for(int j=0; j<num_cities; j++) {
+             if(i!=j) {
+                 fitness[i+num_cities+j] = L2distance(city_x[i], city_y[i], city_x[j], city_y[j]);
+             } else {
+                 fitness[i+num_cities+j] = max_val;
+             }
+         }
+     }
+    exit(0);
+/*
+    {        
+        // city coords are in txt file as so:
+        // 4 450.3 230.3  -  so, split on spaces
+        // index starts from 0
     }
 
-    unsigned int num_bytes = (n+1)*sizeof(int);
-    int* prime_d;
-    err = cudaMalloc((void **)&prime_d, num_bytes);
-    if (err != cudaSuccess)
-    {
-        fprintf(stderr, "Failed to allocate device vector prime (error code %s)!\n", cudaGetErrorString(err));
-        exit(EXIT_FAILURE);
-    }
-    err = cudaMemcpy(prime_d, prime, num_bytes, cudaMemcpyHostToDevice);
-    if (err != cudaSuccess)
-    {
-        fprintf(stderr, "Failed to copy vector prime from host to device (error code %s)!\n", cudaGetErrorString(err));
-        exit(EXIT_FAILURE);
-    }
+*/
 
 
 
-    /*************************
-    *************************
-       * GA memory part
-    *************************
-    *************************/
-    int ISLANDS = ISLANDS_PER_ROW * ISLANDS_PER_ROW * BLOCKS_PER_ROW * BLOCKS_PER_ROW;
 
     srand(time(NULL));
 
     int sizeFloat = sizeof(float);
     int sizeInt = sizeof(unsigned char);
 
-    int populationLength = ISLANDS * GENOME_LENGTH * ISLAND_POPULATION;
+    int populationLength = ISLANDS * chromosome_size * num_chromosomes;
     int sizePopulation = populationLength * sizeInt;
     int sizeBestValue = ISLANDS * sizeFloat;
 
-    int blocksPerGrid = BLOCKS_PER_ROW*BLOCKS_PER_ROW;
+    int blocksPerGrid = num_blocks*num_blocks;
 
     unsigned char *cu_populationA = NULL;
     err = cudaMalloc((void **)&cu_populationA, sizePopulation);
@@ -340,29 +239,13 @@ main(void)
     }
     
   
-   /* 
-    // NOTE These functions will be used if init is done on cpu
-    printf("Pop values of pop length: %d\n", populationLength);
-    for(int i = 0; i <populationLength; i++) {
-        population[i] = rand() % MAX_CONFIG_VAL;
-        printf("%d - ", population[i]);
-    }
-    err = cudaMemcpy( cu_population, population, sizePopulation, cudaMemcpyHostToDevice);
-    if (err != cudaSuccess)
-    {
-        fprintf(stderr, "Failed to copy vector population from host to device (error code %s)!\n", cudaGetErrorString(err));
-        exit(EXIT_FAILURE);
-    }
-    */
-
-
     dim3 dimGrid;
-    dimGrid.x = BLOCKS_PER_ROW;
-    dimGrid.y = BLOCKS_PER_ROW;
+    dimGrid.x = num_blocks;
+    dimGrid.y = num_blocks;
 
     dim3 dimBlock;
-    dimBlock.x = ISLANDS_PER_ROW;
-    dimBlock.y = ISLANDS_PER_ROW;
+    dimBlock.x = num_islands;
+    dimBlock.y = num_islands;
     /* invoke the GPU to initialize all of the random states */
 
     printf("CUDA Init kernel launch with %d blocks of %d threads\n", blocksPerGrid, dimBlock.x * dimBlock.y);
@@ -387,7 +270,7 @@ main(void)
     float maxTotal = 0;
 
     printf("Genetic algorithm launch with %d blocks of %d threads\n", dimGrid.x*dimGrid.y, dimBlock.x * dimBlock.y);
-    for( int i = 1; i <= GENERATIONS ; i++) {
+    for( int i = 1; i <= num_generations ; i++) {
         printf("====> Generation: %d\n", i);
         //for(int k = 0; k < CHUNKS; k++) {
             cu_populationUse = cu_populationA;
@@ -420,7 +303,7 @@ main(void)
             geneticAlgorithmGeneration<<<dimGrid, dimBlock, 0, stream1>>>(
                     states,
                     cu_populationUse,
-                    cu_bestValue, prime_d, n
+                    cu_bestValue
                     );
             cudaDeviceSynchronize();
             err = cudaGetLastError();
@@ -441,7 +324,7 @@ main(void)
             fwrite(population, sizeof(char), sizePopulation, f);
             fclose(f);
 
-            if( i % CHECK_VALUES_EVERY == 0 ) {
+            if( i % 20 == 0 ) {
                 float max = 0;
                 // Verify that the result vector is correct
                 err = cudaMemcpy(bestValue, cu_bestValue, sizeBestValue, cudaMemcpyDeviceToHost);
@@ -452,9 +335,6 @@ main(void)
                 }
                 for (int i = 0; i < ISLANDS; ++i)
                 {
-                    if(SHOW_ALL_VALUES == 1) {
-                        printf("%f | ", bestValue[i]);
-                    }
                     if(bestValue[i] > max) {
                         max = bestValue[i];
                     }
@@ -466,19 +346,10 @@ main(void)
             }
 
     
-        if( i % CHECK_VALUES_EVERY == 0 ) {
-            printf("\nMaxTotal %d: %f\n",i, maxTotal);
-            printf("\n");
-        }
+        printf("\nMaxTotal %d: %f\n",i, maxTotal);
+        printf("\n");
     }
 
-
-    err = cudaFree(prime_d);
-    if (err != cudaSuccess)
-    {
-        fprintf(stderr, "Failed to free device prime_d (error code %s)!\n", cudaGetErrorString(err));
-        exit(EXIT_FAILURE);
-    }
 
     // Free device global memory
     err = cudaFree(cu_populationA);
@@ -503,10 +374,11 @@ main(void)
     }
 
     // Free host memory
+    /*
     free(population);
     free(bestValue);
     free(prime);
-
+    */
     // Reset the device and exit
     // cudaDeviceReset causes the driver to clean up all state. While
     // not mandatory in normal operation, it is good practice.  It is also
