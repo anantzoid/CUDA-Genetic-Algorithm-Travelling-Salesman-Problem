@@ -11,8 +11,6 @@
 __device__ float
 computeFitnessValue( unsigned char *populationRow, float*populationFitness)
 {
-    cudaEvent_t start, stop;
-    float elapsedTime;
     float max = 0;
 
     for(int i = 0; i < num_chromosomes; i++ ) {
@@ -140,46 +138,71 @@ int main() {
    
     cudaError_t err = cudaSuccess;
 
-    int ISLANDS = num_islands * num_islands * num_blocks * num_blocks;
-
     // coordinates of cities
     //ag: tour_t members
-    float city_x[num_cities];
-    float city_y[num_cities];
-    float city_n[num_cities];
+    //float city_x[num_cities];
+    //float city_y[num_cities];
     int local_fitness = 0;
     int distance = 0;
     int max_val = 250;
 
     //ag: costTable
     float fitness[num_cities*num_cities];
-
-    //2. init population
-   
+    
+    int population[ISLANDS*num_cities];
+    float population_cost[ISLANDS];
+  
+    printf("Num islands: %d\n", ISLANDS);
+    printf("Population size: %d\n", ISLANDS*num_cities);
+     
+    /*
     // read initial tour from file 
     FILE* fp; 
     fp = fopen("berlin52.txt", "r");
     char* line = NULL;
     size_t len = 0;
     char* tokens;
+    char* tokens_array[3];
     ssize_t read;
+    int city_counter = 0;
      while ((read = getline(&line, &len, fp)) != -1) {
         tokens = strtok(line, " ");
-        int n = (int)tokens[0]-1;
-        city_x[n] = (float)tokens[1]; 
-        city_y[n] = (float)tokens[2]; 
+        int _i = 0;
+        while(tokens !=NULL) {
+            tokens_array[_i++] = tokens;
+            tokens = strtok(NULL, " ");
+        }
+        city_x[city_counter] = strtof((char*)tokens[1], NULL); 
+        printf("%f", city_x[city_counter]);
+        exit(0);
+        city_y[city_counter] = (float)tokens[2]; 
+        city_counter++;
      }
-    
+    */
+
+    float city_x[] = {565,25,345,945,845,880,25,525,580,650};
+    float city_y[] = {575,185,750,685,655,660,230,1000,1175,1130};
      //building cost table
      for(int i=0; i<num_cities; i++) {
          for(int j=0; j<num_cities; j++) {
              if(i!=j) {
-                 fitness[i+num_cities+j] = L2distance(city_x[i], city_y[i], city_x[j], city_y[j]);
+                 fitness[i*num_cities+j] = L2distance(city_x[i], city_y[i], city_x[j], city_y[j]);
              } else {
-                 fitness[i+num_cities+j] = max_val;
+                 fitness[i*num_cities+j] = max_val;
              }
          }
      }
+
+     initalizeRandomPopulation(population, population_cost, fitness);
+     for(int i=0; i<num_cities*num_cities; i++)
+         printf("%.2f ", fitness[i]);
+     printf("\n");
+     for(int i=0; i<ISLANDS*num_cities; i++)
+         printf("%d ", population[i]);
+     printf("\n");
+     for(int i=0; i<ISLANDS; i++)
+         printf("%.2f ", population_cost[i]);
+
     exit(0);
 /*
     {        
@@ -188,7 +211,6 @@ int main() {
         // index starts from 0
     }
 
-*/
 
 
 
@@ -219,7 +241,6 @@ int main() {
         exit(EXIT_FAILURE);
     }
     curandState_t *states = NULL;
-    /* allocate space on the GPU for the random states */
     err = cudaMalloc((void**) &states, blocksPerGrid * sizeof(curandState_t));
     if (err != cudaSuccess)
     {
@@ -246,7 +267,6 @@ int main() {
     dim3 dimBlock;
     dimBlock.x = num_islands;
     dimBlock.y = num_islands;
-    /* invoke the GPU to initialize all of the random states */
 
     printf("CUDA Init kernel launch with %d blocks of %d threads\n", blocksPerGrid, dimBlock.x * dimBlock.y);
     init<<<dimGrid, 1>>>(time(0), states);
@@ -374,11 +394,6 @@ int main() {
     }
 
     // Free host memory
-    /*
-    free(population);
-    free(bestValue);
-    free(prime);
-    */
     // Reset the device and exit
     // cudaDeviceReset causes the driver to clean up all state. While
     // not mandatory in normal operation, it is good practice.  It is also
@@ -392,13 +407,8 @@ int main() {
         fprintf(stderr, "Failed to deinitialize the device! error=%s\n", cudaGetErrorString(err));
         exit(EXIT_FAILURE);
     }
-    /*
-    for(int x = 0; x < CHUNKS; x++) {
-        sprintf(chunkFileName, "chunk%d.data", x);
-        remove(chunkFileName);
-    }
-    */
     printf("Done\n");
     return 0;
+    */
 }
 
