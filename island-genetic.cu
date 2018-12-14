@@ -83,39 +83,80 @@ killPreviousPopulation(
 }
 
 
-__global__ void geneticAlgorithmGeneration(curandState_t* states, unsigned char *population, float* bestValues) {
+__device__ int getFittestTourIndex(int* tournament, float* tournament_cost,
+        float* tournament_fitness) {
+    int fittest = 0;
+    float fitness = tournament_fitness[0];
 
-    //index of the island itself
-    int island_y = blockDim.y * blockIdx.y + threadIdx.y;
-    int island_x = blockDim.x * blockIdx.x + threadIdx.x;
-
-    unsigned char * populationRow = &population[island_y * chromosome_size * num_chromosomes * num_islands + island_x * chromosome_size * num_chromosomes ];
-
-    __shared__ curandState_t randomState;
-
-    randomState = states[blockDim.x*blockDim.y];
-
-    float populationFitness[num_chromosomes];
-
-    float best = computeFitnessValue(populationRow, populationFitness);
-
-    bestValues[island_y * num_islands + island_x] = best;
-
-    unsigned char  newPopulation[num_chromosomes*chromosome_size];
-    crossover(populationRow, newPopulation, populationFitness, &randomState);
-    mutation(newPopulation, &randomState);
-    killPreviousPopulation(populationRow, newPopulation);
+    for (int i = 1; i < tournament_size-1; i++) {
+        if (tournament_fitness[i] >= fitness) {
+            fittest = i;
+            fitness = tournament_fitness[i];        
+        }
+    }
+    return fittest;
 }
 
-/* this GPU kernel function is used to initialize the random states */
-__global__ void init(unsigned int seed, curandState_t* states) {
+__device__ int* tournamentSelection(int* population_d, float* population_cost_d, 
+        float* population_fitness_d, curandState* states_d, int tid)
+{
+    int tournament[tournament_size*num_cities];
+    float tournament_fitness[tournament_size];
+    float tournament_cost[tournament_size];
+    
+    int randNum;
+    for (int i = 0; i < tournament_size; i++) {
+        // gets random number from global random state on GPU
+        randNum = curand_uniform(&states_d[tid]) * (ISLANDS - 1);
+        //printf("%d %d ", tid, &states_d[tid]);
+        for(int c=0; c<num_cities; c++) {
+            tournament[i*num_cities + c] = population_d[randNum*num_cities + c];
+            tournament_cost[i] = population_cost_d[i];
+            tournament_fitness[i] = population_fitness_d[i];  
+        }
+    }
+    int fittest = getFittestTourIndex(tournament, tournament_cost, tournament_fitness);
+    //printf("%d %d %.5f\n", tid, fittest, tournament_fitness[fittest]);
+    int fittest_route[num_cities];
+    for(int c=0; c<num_cities; c++) {
+        fittest_route[c] = tournament[fittest*num_cities + c];
+    }
+    //printf("\n");
+    return fittest_route;
+}
 
-  /* we have to initialize the state */
-  curand_init(seed, /* the seed can be the same for each core, here we pass the time in from the CPU */
-          blockDim.y * blockIdx.y , /* the sequence number should be different for each core (unless you want all
-                             cores to get the same sequence of numbers for some reason - use thread id! */
-              0, /* the offset is how much extra we advance in the sequence for each call, can be 0 */
-              &states[blockDim.y * blockIdx.y ]);
+
+__global__ void geneticAlgorithmGeneration(
+        int* population_d, float* population_cost_d,
+        float* population_fitness_d, int* parent_cities_d, curandState* states_d) {
+
+    int tid = blockDim.x * blockIdx.x + threadIdx.x;
+    if(tid >= ISLANDS) return;
+
+    tid *= num_cities;
+
+    int* parent1;
+    parent1  = tournamentSelection(population_d, population_cost_d, 
+            population_fitness_d, states_d, tid);
+     
+    for(int c=0; c<num_cities; c++)
+        parent_cities_d[tid* (2*num_cities) +c] = parent1[c];
+    parent1  = tournamentSelection(population_d, population_cost_d, 
+            population_fitness_d, states_d, tid);
+
+    for(int c=0; c<num_cities; c++)
+        parent_cities_d[tid* (2*num_cities) +num_cities +c] = parent1[c];
+}
+
+
+/* this GPU kernel function is used to initialize the random states */
+__global__ void init(curandState_t* states) {
+
+    int tid = blockDim.x * blockIdx.x + threadIdx.x;
+    if(tid >= ISLANDS) return;
+    
+    curand_init(1337, tid, 0, &states[tid]);
+
 }
 
 /* this GPU kernel function is used to initialize the random states */
@@ -138,84 +179,142 @@ int main() {
    
     cudaError_t err = cudaSuccess;
 
-    // coordinates of cities
-    //ag: tour_t members
-    //float city_x[num_cities];
-    //float city_y[num_cities];
-    int local_fitness = 0;
-    int distance = 0;
     int max_val = 250;
 
     //ag: costTable
-    float fitness[num_cities*num_cities];
+    float citymap[num_cities*num_cities];
     
     int population[ISLANDS*num_cities];
+    float population_fitness[ISLANDS];
     float population_cost[ISLANDS];
   
     printf("Num islands: %d\n", ISLANDS);
     printf("Population size: %d\n", ISLANDS*num_cities);
      
-    /*
-    // read initial tour from file 
-    FILE* fp; 
-    fp = fopen("berlin52.txt", "r");
-    char* line = NULL;
-    size_t len = 0;
-    char* tokens;
-    char* tokens_array[3];
-    ssize_t read;
-    int city_counter = 0;
-     while ((read = getline(&line, &len, fp)) != -1) {
-        tokens = strtok(line, " ");
-        int _i = 0;
-        while(tokens !=NULL) {
-            tokens_array[_i++] = tokens;
-            tokens = strtok(NULL, " ");
-        }
-        city_x[city_counter] = strtof((char*)tokens[1], NULL); 
-        printf("%f", city_x[city_counter]);
-        exit(0);
-        city_y[city_counter] = (float)tokens[2]; 
-        city_counter++;
-     }
-    */
-
     float city_x[] = {565,25,345,945,845,880,25,525,580,650};
     float city_y[] = {575,185,750,685,655,660,230,1000,1175,1130};
      //building cost table
      for(int i=0; i<num_cities; i++) {
          for(int j=0; j<num_cities; j++) {
              if(i!=j) {
-                 fitness[i*num_cities+j] = L2distance(city_x[i], city_y[i], city_x[j], city_y[j]);
+                 citymap[i*num_cities+j] = L2distance(city_x[i], city_y[i], city_x[j], city_y[j]);
              } else {
-                 fitness[i*num_cities+j] = max_val;
+                 citymap[i*num_cities+j] = max_val;
              }
          }
      }
 
-     initalizeRandomPopulation(population, population_cost, fitness);
-     for(int i=0; i<num_cities*num_cities; i++)
-         printf("%.2f ", fitness[i]);
-     printf("\n");
+     initalizeRandomPopulation(population, population_cost, population_fitness, citymap);
+     printf("Initial Routes: ");
      for(int i=0; i<ISLANDS*num_cities; i++)
          printf("%d ", population[i]);
      printf("\n");
+     printf("Initial total costs: ");
      for(int i=0; i<ISLANDS; i++)
          printf("%.2f ", population_cost[i]);
+     printf("Initial total fitness: ");
+     for(int i=0; i<ISLANDS; i++)
+         printf("%.5f ", population_fitness[i]);
 
-    exit(0);
-/*
-    {        
-        // city coords are in txt file as so:
-        // 4 450.3 230.3  -  so, split on spaces
-        // index starts from 0
+    //////////////
+     // GPU data
+    //////////////
+     int* population_d;
+     float* population_fitness_d;
+     float* population_cost_d;
+     int* parent_cities_d;
+     float* citymap_d;
+     curandState *states_d;
+
+     err = cudaMalloc((void **)&population_d, ISLANDS*num_cities*sizeof(int));
+     if (err != cudaSuccess) {
+         fprintf(stderr, "Error on population Malloc (error code %s)!\n", cudaGetErrorString(err));
+         exit(EXIT_FAILURE);
+     }
+     err = cudaMalloc((void **)&population_cost_d, ISLANDS*sizeof(float));
+     if (err != cudaSuccess) {
+         fprintf(stderr, "Error on population_cost Malloc (error code %s)!\n", cudaGetErrorString(err));
+         exit(EXIT_FAILURE);
+     }
+
+     err = cudaMalloc((void **)&population_fitness_d, ISLANDS*sizeof(float));
+
+     err = cudaMalloc((void **)&parent_cities_d, 2*ISLANDS*num_cities*sizeof(int));
+     if (err != cudaSuccess) {
+         fprintf(stderr, "Error on parent_cities Malloc (error code %s)!\n", cudaGetErrorString(err));
+         exit(EXIT_FAILURE);
+     }
+
+     err = cudaMalloc((void **)&citymap_d, num_cities*num_cities*sizeof(float));
+     if (err != cudaSuccess) {
+         fprintf(stderr, "Error on citymap Malloc (error code %s)!\n", cudaGetErrorString(err));
+         exit(EXIT_FAILURE);
+     }
+
+     err = cudaMalloc((void **)&states_d, ISLANDS*sizeof(curandState));
+     if (err != cudaSuccess) {
+         fprintf(stderr, "Error on rand_state Malloc (error code %s)!\n", cudaGetErrorString(err));
+         exit(EXIT_FAILURE);
+     }
+
+     // TODO error reporting
+     err = cudaMemcpy(population_d, population, ISLANDS*num_cities*sizeof(int), cudaMemcpyHostToDevice);
+    if (err != cudaSuccess)
+    {
+        fprintf(stderr, "ffdfdndom seed generator (error code %s)!\n", cudaGetErrorString(err));
+        exit(EXIT_FAILURE);
+    }
+     err = cudaMemcpy(population_cost_d, population_cost, ISLANDS*sizeof(float), cudaMemcpyHostToDevice);
+    if (err != cudaSuccess)
+    {
+        fprintf(stderr, "2Error in random seed generator (error code %s)!\n", cudaGetErrorString(err));
+        exit(EXIT_FAILURE);
+    }
+     err = cudaMemcpy(population_fitness_d, population_fitness, ISLANDS*sizeof(float), cudaMemcpyHostToDevice);
+    if (err != cudaSuccess)
+    {
+        fprintf(stderr, "3Error in random seed generator (error code %s)!\n", cudaGetErrorString(err));
+        exit(EXIT_FAILURE);
+    }
+     err = cudaMemcpy(citymap_d, citymap, num_cities*num_cities*sizeof(float), cudaMemcpyHostToDevice);
+    if (err != cudaSuccess)
+    {
+        fprintf(stderr, "4Error in random seed generator (error code %s)!\n", cudaGetErrorString(err));
+        exit(EXIT_FAILURE);
     }
 
+    float milliseconds;
+    cudaEvent_t start, stop;
+    cudaEventCreate (&start);
+    cudaEventCreate (&stop);
+    cudaEventRecord (start);
+
+    init<<<num_blocks*num_blocks, num_islands*num_islands>>>(states_d);
+    if (err != cudaSuccess)
+    {
+        fprintf(stderr, "Error in random seed generator (error code %s)!\n", cudaGetErrorString(err));
+        exit(EXIT_FAILURE);
+    }
+    for(int i=0; i < num_generations; i++ ) {
 
 
+        geneticAlgorithmGeneration<<<num_blocks*num_blocks, num_islands*num_islands>>>(
+                population_d, population_cost_d, population_fitness_d, parent_cities_d, states_d);
+        cudaDeviceSynchronize();
+        err = cudaGetLastError();
+        if (err != cudaSuccess)
+        {
+            fprintf(stderr, "Failed to launch geneticAlgorithmGeneration kernel (error code %s)!\n", cudaGetErrorString(err));
+            exit(EXIT_FAILURE);
+        }
+        /*
+        for (int j = 0; j < num_cities; j++){
+            crossover<<<num_blocks*num_blocks, num_islands*num_islands>>>(population_d, population_cost_d, population_fitness_d, parent_cities_d, states_d, citymap_d, j); 
+        }
+        */
+    }
 
-
-    srand(time(NULL));
+/*
 
     int sizeFloat = sizeof(float);
     int sizeInt = sizeof(unsigned char);

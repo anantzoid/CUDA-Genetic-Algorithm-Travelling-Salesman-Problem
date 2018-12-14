@@ -12,3 +12,4 @@ const int ISLANDS = num_islands * num_islands * num_blocks * num_blocks;
 
 
 const int num_cities = 10;
+const int tournament_size = 5;
