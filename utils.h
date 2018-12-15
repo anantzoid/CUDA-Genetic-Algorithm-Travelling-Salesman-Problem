@@ -4,6 +4,7 @@ float L2distance(float x1, float y1, float x2, float y2) {
    return sqrt(x_d + y_d); 
 }
 
+
 __host__ __device__ void evaluateRoute(int* population,float* population_cost, float* population_fitness, float* citymap, int i) {
     float distance = 0;
     for (int j = 0; j < num_cities-1; j++) {
@@ -48,3 +49,55 @@ void initalizeRandomPopulation(int* population, float* population_cost, float* p
 
 } 
 
+__device__ int find_city(int current_city_id, int* tour, int local_num_cities) {
+    for (int i = 0; i < local_num_cities; i++) {
+        if (current_city_id == tour[i])
+            return i;
+    }
+    return -1;
+}
+
+__device__ int getCityN(int n, int* parent_cities_ptr) {
+    for (int i = 0; i < num_cities; i++)
+    {
+        if (parent_cities_ptr[i] == n)
+            return parent_cities_ptr[i];
+    }
+
+    printf("%d, %d", blockIdx.x, threadIdx.x);
+    printf("could not find city %d in this tour\n", n);
+    //printTour(tour);
+    return 0;
+}
+
+__device__ int getValidNextCity(int* parent_cities_ptr, int* tourarray, int current_city_id, int index) {    
+    
+    int local_city_index = find_city(current_city_id, parent_cities_ptr, num_cities);
+
+    // search for first valid city (not already in child) 
+    // occurring after currentCities location in parent tour
+    for (int i = local_city_index+1; i < num_cities; i++)
+    {
+        // if not in child already, select it!
+        if (find_city(parent_cities_ptr[i], tourarray, index) == -1)
+            return parent_cities_ptr[i];
+    }
+
+    // loop through city id's [1.. NUM_CITIES] and find first valid city
+    // to choose as a next point in construction of child tour
+    for (int i = 1; i < num_cities; i++) {
+        bool inTourAlready = false;
+        for (int j = 1; j < index; j++) {
+            if (tourarray[j] == i) {
+                inTourAlready = true;
+                break;
+            }
+        }
+
+        if (!inTourAlready)
+            return getCityN(i, parent_cities_ptr);
+    }
+    
+    printf("no valid city was found!\n\n");
+    return 0;
+}   

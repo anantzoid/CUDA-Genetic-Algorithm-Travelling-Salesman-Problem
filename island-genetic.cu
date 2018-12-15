@@ -8,80 +8,65 @@
 #include "constants.c"
 #include "utils.h"
 
-__device__ float
-computeFitnessValue( unsigned char *populationRow, float*populationFitness)
-{
-    float max = 0;
+__global__ void mutation(int* population_d, float* population_cost_d, float* population_fitness_d, curandState*  states_d) {
 
-    for(int i = 0; i < num_chromosomes; i++ ) {
-        populationFitness[i] = i;
-        if( populationFitness[i] > max) {
-            max = populationFitness[i];
-        }
-    }
-    return max;
-}
+    int tid = blockDim.x * blockIdx.x + threadIdx.x;
+    if(tid >= ISLANDS) return;
 
-__device__ void
-crossover(
-        unsigned char *populationRow,
-        unsigned char *newPopulation,
-        float *selectedPopulation,
-        curandState_t *randomState)
-{
-    int i,j;
-    int selectedPhenotype,
-        selectedPhenotypeA,
-        selectedPhenotypeB;
-    int treshold = 0;
-    for( i = 0; i < num_chromosomes; i++) {
+    curandState localState = states_d[tid];
+    if (curand_uniform(&localState) < mutation_ratio) {
+        int randNum1 = 1 + curand_uniform(&localState) *  (num_cities - 1.0000001);
+        int randNum2 = 1 + curand_uniform(&localState) * (num_cities - 1.0000001);
 
-        selectedPhenotypeA = selectedPopulation[ curand(randomState) % num_chromosomes ];
-        selectedPhenotypeB = selectedPopulation[ curand(randomState) % num_chromosomes ];
+        int city_temp = population_d[tid*num_cities + randNum1];
+        population_d[tid*num_cities + randNum1] = population_d[tid*num_cities + randNum2];
+        population_d[tid*num_cities + randNum2] = city_temp;
 
-        treshold = curand(randomState) % chromosome_size;
-
-        for(j = 0; j < chromosome_size; j++) {
-            if(j < treshold) {
-                selectedPhenotype = selectedPhenotypeA;
-            } else {
-                selectedPhenotype = selectedPhenotypeB;
-            }
-
-            newPopulation[i * chromosome_size + j] =
-                    populationRow[selectedPhenotype * chromosome_size];
-        }
+        states_d[tid] = localState; 
     }
 }
 
-__device__ void
-mutation(
-        unsigned char *newPopulation,
-        curandState_t *randomState)
-{
-    int i;
+__global__ void getPopulationFitness(int* population_d, float* population_cost_d, float* population_fitness_d, float* citymap_d) {
+    
+    int tid = blockDim.x * blockIdx.x + threadIdx.x;
+    if(tid >= ISLANDS) return;
 
-    for( i = 0; i < num_chromosomes; i++) {
-        if(curand_uniform(randomState) < mutation_ratio) {
-            newPopulation[ i* chromosome_size + (curand(randomState) % chromosome_size ) ]
-                           = curand(randomState) % MAX_CONFIG_VAL;
-        }
-    }
+    evaluateRoute(population_d, population_cost_d, population_fitness_d, citymap_d, tid); 
 }
 
-__device__ void
-killPreviousPopulation(
-        unsigned char *populationRow,
-        unsigned char *newPopulation
-)
-{
-    int i;
+__global__ void crossover(int* population_d, float* population_cost_d,
+        float* population_fitness_d, int* parent_cities_d, curandState* states_d, float* citymap_d, int index) {
 
-    for( i = 0; i < num_chromosomes * chromosome_size; i++) {
-        populationRow[i] = newPopulation[i];
-    }
+    // Get thread (particle) ID
+    int tid = blockDim.x * blockIdx.x + threadIdx.x;
+    if(tid >= ISLANDS) return;
+
+    population_d[tid*num_cities] = parent_cities_d[tid* (2*num_cities)];
+
+    int parent_city_ptr[num_cities];
+    for(int i=0; i<num_cities;i++)
+        parent_city_ptr[i] = parent_cities_d[tid*num_cities*2 + i];
+
+    int tourarray[num_cities];
+    for(int i=0; i<num_cities;i++)
+        tourarray[i] = tourarray[tid*num_cities + i];
+
+    int current_city_id = population_d[tid*num_cities + index - 1];
+
+    int c1 = getValidNextCity(parent_city_ptr, tourarray, current_city_id, index);
+
+
+    for(int i=0; i<num_cities;i++)
+        parent_city_ptr[i] = parent_cities_d[tid*num_cities*2+num_cities + i];
+
+    int c2 = getValidNextCity(parent_city_ptr, tourarray, current_city_id, index);
+   
+    if(citymap_d[c1*num_cities + current_city_id] <= citymap_d[c2*num_cities + current_city_id])
+        population_d[tid*num_cities + index] = c1;
+    else
+        population_d[tid*num_cities + index] = c2;
+
 }
-
 
 __device__ int getFittestTourIndex(int* tournament, float* tournament_cost,
         float* tournament_fitness) {
@@ -133,8 +118,6 @@ __global__ void geneticAlgorithmGeneration(
     int tid = blockDim.x * blockIdx.x + threadIdx.x;
     if(tid >= ISLANDS) return;
 
-    tid *= num_cities;
-
     int* parent1;
     parent1  = tournamentSelection(population_d, population_cost_d, 
             population_fitness_d, states_d, tid);
@@ -159,23 +142,8 @@ __global__ void init(curandState_t* states) {
 
 }
 
-/* this GPU kernel function is used to initialize the random states */
-__global__ void randomizePopulation(curandState_t* states, unsigned char* population ) {
-    int island_y = blockDim.y * blockIdx.y + threadIdx.y;
-    int island_x = blockDim.x * blockIdx.x + threadIdx.x;
-
-    //Ques: why is this shared?
-    __shared__ curandState_t randomState;
-    randomState = states[blockDim.y * blockIdx.y ];
-
-    unsigned char * populationRow = &population[island_y * chromosome_size * num_chromosomes * num_islands + island_x * chromosome_size * num_chromosomes ];
-
-    for(int i = 0; i < chromosome_size * num_chromosomes; i++) {
-        populationRow[i] = curand(&randomState) % MAX_CONFIG_VAL;
-    };
-}
-
 int main() {
+    cudaSetDevice(1);
    
     cudaError_t err = cudaSuccess;
 
@@ -191,8 +159,6 @@ int main() {
     printf("Num islands: %d\n", ISLANDS);
     printf("Population size: %d\n", ISLANDS*num_cities);
      
-    float city_x[] = {565,25,345,945,845,880,25,525,580,650};
-    float city_y[] = {575,185,750,685,655,660,230,1000,1175,1130};
      //building cost table
      for(int i=0; i<num_cities; i++) {
          for(int j=0; j<num_cities; j++) {
@@ -212,9 +178,11 @@ int main() {
      printf("Initial total costs: ");
      for(int i=0; i<ISLANDS; i++)
          printf("%.2f ", population_cost[i]);
+     printf("\n");
      printf("Initial total fitness: ");
      for(int i=0; i<ISLANDS; i++)
          printf("%.5f ", population_fitness[i]);
+     printf("\n");
 
     //////////////
      // GPU data
@@ -282,7 +250,6 @@ int main() {
         fprintf(stderr, "4Error in random seed generator (error code %s)!\n", cudaGetErrorString(err));
         exit(EXIT_FAILURE);
     }
-
     float milliseconds;
     cudaEvent_t start, stop;
     cudaEventCreate (&start);
@@ -290,13 +257,18 @@ int main() {
     cudaEventRecord (start);
 
     init<<<num_blocks*num_blocks, num_islands*num_islands>>>(states_d);
+    err = cudaGetLastError();
     if (err != cudaSuccess)
     {
         fprintf(stderr, "Error in random seed generator (error code %s)!\n", cudaGetErrorString(err));
         exit(EXIT_FAILURE);
     }
-    for(int i=0; i < num_generations; i++ ) {
 
+
+    getPopulationFitness<<<num_blocks*num_blocks, num_islands*num_islands>>>(
+        population_d, population_cost_d, population_fitness_d, citymap_d);
+
+    for(int i=0; i < num_generations; i++ ) {
 
         geneticAlgorithmGeneration<<<num_blocks*num_blocks, num_islands*num_islands>>>(
                 population_d, population_cost_d, population_fitness_d, parent_cities_d, states_d);
@@ -307,207 +279,68 @@ int main() {
             fprintf(stderr, "Failed to launch geneticAlgorithmGeneration kernel (error code %s)!\n", cudaGetErrorString(err));
             exit(EXIT_FAILURE);
         }
-        /*
+
         for (int j = 0; j < num_cities; j++){
             crossover<<<num_blocks*num_blocks, num_islands*num_islands>>>(population_d, population_cost_d, population_fitness_d, parent_cities_d, states_d, citymap_d, j); 
         }
-        */
+
+        mutation<<<num_blocks*num_blocks, num_islands*num_islands>>>(
+                population_d, population_cost_d, population_fitness_d, states_d);
+        cudaDeviceSynchronize();
+        err = cudaGetLastError();
+        if (err != cudaSuccess)
+        {
+            fprintf(stderr, "Failed to launch Mutation kernel (error code %s)!\n", cudaGetErrorString(err));
+            exit(EXIT_FAILURE);
+        }
+
+
+        getPopulationFitness<<<num_blocks*num_blocks, num_islands*num_islands>>>(
+                population_d, population_cost_d, population_fitness_d, citymap_d);
+        cudaDeviceSynchronize();
+        err = cudaGetLastError();
+        if (err != cudaSuccess)
+        {
+            fprintf(stderr, "Failed to launch Evaluation kernel (error code %s)!\n", cudaGetErrorString(err));
+            exit(EXIT_FAILURE);
+        }
+
+
     }
 
-/*
+    ///Fin/////
+    cudaEventRecord (stop);
+    cudaEventSynchronize (stop);
+    cudaEventElapsedTime (&milliseconds, start, stop);
 
-    int sizeFloat = sizeof(float);
-    int sizeInt = sizeof(unsigned char);
-
-    int populationLength = ISLANDS * chromosome_size * num_chromosomes;
-    int sizePopulation = populationLength * sizeInt;
-    int sizeBestValue = ISLANDS * sizeFloat;
-
-    int blocksPerGrid = num_blocks*num_blocks;
-
-    unsigned char *cu_populationA = NULL;
-    err = cudaMalloc((void **)&cu_populationA, sizePopulation);
+    cudaMemcpy(population, population_d,  ISLANDS*num_cities*sizeof(int), cudaMemcpyDeviceToHost);
+    cudaMemcpy(population_fitness, population_fitness_d,  ISLANDS*sizeof(float), cudaMemcpyDeviceToHost);
+    cudaMemcpy(population_cost, population_cost_d,  ISLANDS*sizeof(float), cudaMemcpyDeviceToHost);
+    cudaDeviceSynchronize();
+    err = cudaGetLastError();
     if (err != cudaSuccess)
     {
-        fprintf(stderr, "Failed to allocate device vector Population (error code %s)!\n", cudaGetErrorString(err));
-        exit(EXIT_FAILURE);
-    }
-    float *cu_bestValue = NULL;
-    err = cudaMalloc((void **)&cu_bestValue, sizeBestValue);
-    if (err != cudaSuccess)
-    {
-        fprintf(stderr, "Failed to allocate device vector bestValue (error code %s)!\n", cudaGetErrorString(err));
-        exit(EXIT_FAILURE);
-    }
-    curandState_t *states = NULL;
-    err = cudaMalloc((void**) &states, blocksPerGrid * sizeof(curandState_t));
-    if (err != cudaSuccess)
-    {
-        fprintf(stderr, "Failed to allocate device vector randomStates (error code %s)!\n", cudaGetErrorString(err));
+        fprintf(stderr, "Failed to launch geneticAlgorithmGeneration kernel (error code %s)!\n", cudaGetErrorString(err));
         exit(EXIT_FAILURE);
     }
 
 
-    unsigned char *population = (unsigned char *)malloc(sizePopulation);
-    float *bestValue = (float*)malloc(sizeBestValue);
+    //get fitness
+    int fittest = 0;
+    for(int i=1; i<ISLANDS; i++) {
+        if(population_fitness[i] >= population_fitness[fittest])
+            fittest = i;
+    } 
 
+    printf("time: %f,  min distance: %f\n", milliseconds/1000, population_cost[fittest]);
 
-    if (population == NULL || bestValue == NULL)
-    {
-        fprintf(stderr, "Failed to allocate host vectors!\n");
-        exit(EXIT_FAILURE);
-    }
-    
-  
-    dim3 dimGrid;
-    dimGrid.x = num_blocks;
-    dimGrid.y = num_blocks;
+    cudaFree(population_d);
+    cudaFree(population_fitness_d);
+    cudaFree(population_cost_d);
+    cudaFree(parent_cities_d);
+    cudaFree(citymap_d);
+    cudaFree(states_d);
 
-    dim3 dimBlock;
-    dimBlock.x = num_islands;
-    dimBlock.y = num_islands;
-
-    printf("CUDA Init kernel launch with %d blocks of %d threads\n", blocksPerGrid, dimBlock.x * dimBlock.y);
-    init<<<dimGrid, 1>>>(time(0), states);
-
-    if (err != cudaSuccess)
-    {
-        fprintf(stderr, "Failed to launch Init kernel (error code %s)!\n", cudaGetErrorString(err));
-        exit(EXIT_FAILURE);
-    }
-
-
-    cudaStream_t stream1, stream2;
-    cudaStreamCreate ( &stream1) ;
-    cudaStreamCreate ( &stream2) ;
-    char chunkFileName[20];
-    char chunkTargetFileName[20];
-
-    unsigned char *cu_populationLoad = NULL;
-    unsigned char *cu_populationUse = NULL;
-
-    float maxTotal = 0;
-
-    printf("Genetic algorithm launch with %d blocks of %d threads\n", dimGrid.x*dimGrid.y, dimBlock.x * dimBlock.y);
-    for( int i = 1; i <= num_generations ; i++) {
-        printf("====> Generation: %d\n", i);
-        //for(int k = 0; k < CHUNKS; k++) {
-            cu_populationUse = cu_populationA;
-            cu_populationLoad = cu_populationA;
-            sprintf(chunkFileName, "chunk.data");
-            if(i == 1) {
-                randomizePopulation<<<dimGrid, dimBlock, 0, stream1>>>( states, cu_populationUse);
-                err = cudaGetLastError();
-                if (err != cudaSuccess)
-                {
-                    fprintf(stderr, "Failed to launch randomizePopulation kernel (error code %s)!\n", cudaGetErrorString(err));
-                    exit(EXIT_FAILURE);
-                }
-            }
-            if(i !=1){
-
-                //load data for the next chunk
-                sprintf(chunkTargetFileName, "chunk.data");
-                FILE *ifp = fopen(chunkTargetFileName, "rb");
-                fread(population, sizeof(char), sizePopulation, ifp);
-                err = cudaMemcpyAsync(cu_populationLoad, population, sizePopulation, cudaMemcpyHostToDevice, stream2);
-                if (err != cudaSuccess)
-                {
-                    fprintf(stderr, "Failed to copy data TO device (error code %s)!\n", cudaGetErrorString(err));
-                    exit(EXIT_FAILURE);
-                }
-            }
-
-
-            geneticAlgorithmGeneration<<<dimGrid, dimBlock, 0, stream1>>>(
-                    states,
-                    cu_populationUse,
-                    cu_bestValue
-                    );
-            cudaDeviceSynchronize();
-            err = cudaGetLastError();
-            if (err != cudaSuccess)
-            {
-                fprintf(stderr, "Failed to launch geneticAlgorithmGeneration kernel (error code %s)!\n", cudaGetErrorString(err));
-                exit(EXIT_FAILURE);
-            }
-
-
-            err = cudaMemcpy(population, cu_populationUse, sizePopulation, cudaMemcpyDeviceToHost);
-            if (err != cudaSuccess)
-            {
-                fprintf(stderr, "Failed to copy data FROM device (error code %s)!\n", cudaGetErrorString(err));
-                exit(EXIT_FAILURE);
-            }
-            FILE *f = fopen(chunkFileName, "wb");
-            fwrite(population, sizeof(char), sizePopulation, f);
-            fclose(f);
-
-            if( i % 20 == 0 ) {
-                float max = 0;
-                // Verify that the result vector is correct
-                err = cudaMemcpy(bestValue, cu_bestValue, sizeBestValue, cudaMemcpyDeviceToHost);
-                if (err != cudaSuccess)
-                {
-                    fprintf(stderr, "Failed to copy best values from device (error code %s)!\n", cudaGetErrorString(err));
-                    exit(EXIT_FAILURE);
-                }
-                for (int i = 0; i < ISLANDS; ++i)
-                {
-                    if(bestValue[i] > max) {
-                        max = bestValue[i];
-                    }
-                    if(bestValue[i] > maxTotal) {
-                        maxTotal = bestValue[i];
-                    }
-
-                }
-            }
-
-    
-        printf("\nMaxTotal %d: %f\n",i, maxTotal);
-        printf("\n");
-    }
-
-
-    // Free device global memory
-    err = cudaFree(cu_populationA);
-    if (err != cudaSuccess)
-    {
-        fprintf(stderr, "Failed to free device vector A (error code %s)!\n", cudaGetErrorString(err));
-        exit(EXIT_FAILURE);
-    }
-    // Free device global memory
-    err = cudaFree(cu_bestValue);
-    if (err != cudaSuccess)
-    {
-        fprintf(stderr, "Failed to free device vector A (error code %s)!\n", cudaGetErrorString(err));
-        exit(EXIT_FAILURE);
-    }
-    // Free device global memory
-    err = cudaFree(states);
-    if (err != cudaSuccess)
-    {
-        fprintf(stderr, "Failed to free device vector A (error code %s)!\n", cudaGetErrorString(err));
-        exit(EXIT_FAILURE);
-    }
-
-    // Free host memory
-    // Reset the device and exit
-    // cudaDeviceReset causes the driver to clean up all state. While
-    // not mandatory in normal operation, it is good practice.  It is also
-    // needed to ensure correct operation when the application is being
-    // profiled. Calling cudaDeviceReset causes all profile data to be
-    // flushed before the application exits
-    err = cudaDeviceReset();
-
-    if (err != cudaSuccess)
-    {
-        fprintf(stderr, "Failed to deinitialize the device! error=%s\n", cudaGetErrorString(err));
-        exit(EXIT_FAILURE);
-    }
-    printf("Done\n");
     return 0;
-    */
 }
 
