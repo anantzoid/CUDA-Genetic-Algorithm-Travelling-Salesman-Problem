@@ -4,21 +4,24 @@ float L2distance(float x1, float y1, float x2, float y2) {
    return sqrt(x_d + y_d); 
 }
 
-
-__host__ __device__ void evaluateRoute(int* population,float* population_cost, float* population_fitness, float* citymap, int i) {
+__host__ __device__ void evaluateRoute(int* population, float* population_cost, float* population_fitness, float* citymap, int i) {
     float distance = 0;
+    //printf("cm:\n");
     for (int j = 0; j < num_cities-1; j++) {
         //printf("%.2f ", citymap[population[i*num_cities+j]*num_cities + population[i*num_cities + j+1]]);
         distance += citymap[population[i*num_cities + j]*num_cities + population[i*num_cities + j+1]];
     }
     //printf("\n");
     distance += citymap[population[i*num_cities + num_cities-1]*num_cities + population[i*num_cities]];
+    //printf("dist: %.4f\n", distance);
 
     population_cost[i] = distance;
+    //printf("cost: %.4f\n", population_cost[i]);
  
     population_fitness[i] = 0;
     if (population_cost[i] != 0)
         population_fitness[i] = (1.0/population_cost[i]);
+    //printf("%.4f, fitness: %.7f\n", population_cost[i], population_fitness[i]);
 }
 
 
@@ -38,7 +41,6 @@ void initalizeRandomPopulation(int* population, float* population_cost, float* p
             int temp = temp_tour[j];
             temp_tour[j] = temp_tour[pos];
             temp_tour[pos] = temp;
-
         }
 
         for (int j = 0; j < num_cities; j++) {
@@ -64,15 +66,15 @@ __device__ int getCityN(int n, int* parent_cities_ptr) {
             return parent_cities_ptr[i];
     }
 
-    printf("%d, %d", blockIdx.x, threadIdx.x);
-    printf("could not find city %d in this tour\n", n);
+    //printf("%d, %d", blockIdx.x, threadIdx.x);
+    //printf("could not find city %d in this tour\n", n);
     //printTour(tour);
     return 0;
 }
 
 __device__ int getValidNextCity(int* parent_cities_ptr, int* tourarray, int current_city_id, int index) {    
     
-    int local_city_index = find_city(current_city_id, parent_cities_ptr, num_cities);
+    int local_city_index = current_city_id;//find_city(current_city_id, parent_cities_ptr, num_cities);
 
     // search for first valid city (not already in child) 
     // occurring after currentCities location in parent tour
@@ -101,3 +103,12 @@ __device__ int getValidNextCity(int* parent_cities_ptr, int* tourarray, int curr
     printf("no valid city was found!\n\n");
     return 0;
 }   
+
+int getFittestScore(float* population_fitness) {
+    int fittest = 0;
+    for(int i=1; i<ISLANDS; i++) {
+        if(population_fitness[i] >= population_fitness[fittest])
+            fittest = i;
+    } 
+    return fittest; 
+}

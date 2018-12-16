@@ -15,8 +15,16 @@ __global__ void mutation(int* population_d, float* population_cost_d, float* pop
 
     curandState localState = states_d[tid];
     if (curand_uniform(&localState) < mutation_ratio) {
+        //printf("RAND %d  %d %d\n", tid, localState, curand_uniform(&localState));
+
+        // This gives better score than using Random
         int randNum1 = 1 + curand_uniform(&localState) *  (num_cities - 1.0000001);
         int randNum2 = 1 + curand_uniform(&localState) * (num_cities - 1.0000001);
+        /*
+        printf("r1: %d, r2: %d\n", randNum1, randNum2);
+        printf("temp_id 1: %d\n", tid*num_cities + randNum1);
+        printf("temp_id 2: %d\n", tid*num_cities + randNum2);
+        */
 
         int city_temp = population_d[tid*num_cities + randNum1];
         population_d[tid*num_cities + randNum1] = population_d[tid*num_cities + randNum2];
@@ -49,7 +57,7 @@ __global__ void crossover(int* population_d, float* population_cost_d,
 
     int tourarray[num_cities];
     for(int i=0; i<num_cities;i++)
-        tourarray[i] = tourarray[tid*num_cities + i];
+        tourarray[i] = population_d[tid*num_cities + i];
 
     int current_city_id = population_d[tid*num_cities + index - 1];
 
@@ -74,6 +82,7 @@ __device__ int getFittestTourIndex(int* tournament, float* tournament_cost,
     float fitness = tournament_fitness[0];
 
     for (int i = 1; i < tournament_size-1; i++) {
+        //printf("%.6f\n", tournament_fitness[i]);
         if (tournament_fitness[i] >= fitness) {
             fittest = i;
             fitness = tournament_fitness[i];        
@@ -83,8 +92,7 @@ __device__ int getFittestTourIndex(int* tournament, float* tournament_cost,
 }
 
 __device__ int* tournamentSelection(int* population_d, float* population_cost_d, 
-        float* population_fitness_d, curandState* states_d, int tid)
-{
+        float* population_fitness_d, curandState* states_d, int tid) {
     int tournament[tournament_size*num_cities];
     float tournament_fitness[tournament_size];
     float tournament_cost[tournament_size];
@@ -93,11 +101,12 @@ __device__ int* tournamentSelection(int* population_d, float* population_cost_d,
     for (int i = 0; i < tournament_size; i++) {
         // gets random number from global random state on GPU
         randNum = curand_uniform(&states_d[tid]) * (ISLANDS - 1);
+        //NOTE BUG: this should be different but is always same!!! 
         //printf("%d %d ", tid, &states_d[tid]);
         for(int c=0; c<num_cities; c++) {
             tournament[i*num_cities + c] = population_d[randNum*num_cities + c];
-            tournament_cost[i] = population_cost_d[i];
-            tournament_fitness[i] = population_fitness_d[i];  
+            tournament_cost[i] = population_cost_d[randNum];
+            tournament_fitness[i] = population_fitness_d[randNum];  
         }
     }
     int fittest = getFittestTourIndex(tournament, tournament_cost, tournament_fitness);
@@ -129,6 +138,19 @@ __global__ void geneticAlgorithmGeneration(
 
     for(int c=0; c<num_cities; c++)
         parent_cities_d[tid* (2*num_cities) +num_cities +c] = parent1[c];
+
+    /*
+       //NOTE: parents are mostly same for all now
+    printf("citis:\n");
+    for(int c=0; c<num_cities; c++)
+        printf("%d ", population_d[tid* num_cities + c]);
+
+    printf("\n");
+    printf("parents:\n");
+    for(int c=0; c<num_cities*2; c++)
+        printf("%d ", parent_cities_d[tid* (2*num_cities) + c]);
+    printf("\n");
+    */
 }
 
 
@@ -143,7 +165,7 @@ __global__ void init(curandState_t* states) {
 }
 
 int main() {
-    cudaSetDevice(1);
+    //cudaSetDevice(1);
    
     cudaError_t err = cudaSuccess;
 
@@ -165,12 +187,13 @@ int main() {
              if(i!=j) {
                  citymap[i*num_cities+j] = L2distance(city_x[i], city_y[i], city_x[j], city_y[j]);
              } else {
-                 citymap[i*num_cities+j] = max_val;
+                 citymap[i*num_cities+j] = max_val * max_val;
              }
          }
      }
 
      initalizeRandomPopulation(population, population_cost, population_fitness, citymap);
+     /*
      printf("Initial Routes: ");
      for(int i=0; i<ISLANDS*num_cities; i++)
          printf("%d ", population[i]);
@@ -183,6 +206,10 @@ int main() {
      for(int i=0; i<ISLANDS; i++)
          printf("%.5f ", population_fitness[i]);
      printf("\n");
+     */
+
+    int fittest = getFittestScore(population_fitness);
+    printf("min distance: %f\n", population_cost[fittest]);
 
     //////////////
      // GPU data
@@ -268,7 +295,7 @@ int main() {
     getPopulationFitness<<<num_blocks*num_blocks, num_islands*num_islands>>>(
         population_d, population_cost_d, population_fitness_d, citymap_d);
 
-    for(int i=0; i < num_generations; i++ ) {
+    for(int i = 0; i < num_generations; i++ ) {
 
         geneticAlgorithmGeneration<<<num_blocks*num_blocks, num_islands*num_islands>>>(
                 population_d, population_cost_d, population_fitness_d, parent_cities_d, states_d);
@@ -280,8 +307,17 @@ int main() {
             exit(EXIT_FAILURE);
         }
 
-        for (int j = 0; j < num_cities; j++){
+
+        for (int j = 1; j < num_cities; j++){
             crossover<<<num_blocks*num_blocks, num_islands*num_islands>>>(population_d, population_cost_d, population_fitness_d, parent_cities_d, states_d, citymap_d, j); 
+            //printf("%d", j);
+        cudaDeviceSynchronize();
+        err = cudaGetLastError();
+        if (err != cudaSuccess)
+        {
+            fprintf(stderr, "Failed to launch Crossover kernel (error code %s)!\n", cudaGetErrorString(err));
+            exit(EXIT_FAILURE);
+        }
         }
 
         mutation<<<num_blocks*num_blocks, num_islands*num_islands>>>(
@@ -294,7 +330,6 @@ int main() {
             exit(EXIT_FAILURE);
         }
 
-
         getPopulationFitness<<<num_blocks*num_blocks, num_islands*num_islands>>>(
                 population_d, population_cost_d, population_fitness_d, citymap_d);
         cudaDeviceSynchronize();
@@ -305,7 +340,20 @@ int main() {
             exit(EXIT_FAILURE);
         }
 
+        if(i % print_interval == 0) {
+            cudaMemcpy(population_fitness, population_fitness_d,  ISLANDS*sizeof(float), cudaMemcpyDeviceToHost);
+            cudaMemcpy(population_cost, population_cost_d,  ISLANDS*sizeof(float), cudaMemcpyDeviceToHost);
+            fittest = getFittestScore(population_fitness);
+            printf("Iteration:%d, min distance: %f\n", i, population_cost[fittest]);
 
+
+            /*
+            cudaMemcpy(population, population_d, ISLANDS*sizeof(float), cudaMemcpyDeviceToHost);
+            for(int i=0; i<ISLANDS*num_cities; i++)
+                printf("%d ", population[i]);
+            printf("\n");
+            */
+        }
     }
 
     ///Fin/////
@@ -325,13 +373,7 @@ int main() {
     }
 
 
-    //get fitness
-    int fittest = 0;
-    for(int i=1; i<ISLANDS; i++) {
-        if(population_fitness[i] >= population_fitness[fittest])
-            fittest = i;
-    } 
-
+    fittest = getFittestScore(population_fitness);
     printf("time: %f,  min distance: %f\n", milliseconds/1000, population_cost[fittest]);
 
     cudaFree(population_d);
