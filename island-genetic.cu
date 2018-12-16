@@ -10,8 +10,26 @@
 
 __global__ void mutation(int* population_d, float* population_cost_d, float* population_fitness_d, curandState*  states_d) {
 
+
     int tid = blockDim.x * blockIdx.x + threadIdx.x;
     if(tid >= ISLANDS) return;
+
+    /*
+    printf("after %d -> ", tid);
+    for(int c=0; c<num_cities; c++)
+        printf("%d ", population_d[tid*num_cities+c]);
+    printf("\n");
+    
+    printf("parent1 %d -> ", tid);
+    for(int i=0; i<num_cities;i++)
+        printf("%d ", parent_cities_d[tid*num_cities*2 + i]);
+    printf("\n");
+
+    printf("parent2 %d -> ", tid);
+    for(int i=0; i<num_cities;i++)
+        printf("%d ", parent_cities_d[tid*num_cities*2+num_cities + i]);
+    printf("\n");
+    */
 
     curandState localState = states_d[tid];
     if (curand_uniform(&localState) < mutation_ratio) {
@@ -76,21 +94,6 @@ __global__ void crossover(int* population_d, float* population_cost_d,
 
 }
 
-__device__ int getFittestTourIndex(int* tournament, float* tournament_cost,
-        float* tournament_fitness) {
-    int fittest = 0;
-    float fitness = tournament_fitness[0];
-
-    for (int i = 1; i < tournament_size-1; i++) {
-        //printf("%.6f\n", tournament_fitness[i]);
-        if (tournament_fitness[i] >= fitness) {
-            fittest = i;
-            fitness = tournament_fitness[i];        
-        }
-    }
-    return fittest;
-}
-
 __device__ int* tournamentSelection(int* population_d, float* population_cost_d, 
         float* population_fitness_d, curandState* states_d, int tid) {
     int tournament[tournament_size*num_cities];
@@ -101,8 +104,8 @@ __device__ int* tournamentSelection(int* population_d, float* population_cost_d,
     for (int i = 0; i < tournament_size; i++) {
         // gets random number from global random state on GPU
         randNum = curand_uniform(&states_d[tid]) * (ISLANDS - 1);
-        //NOTE BUG: this should be different but is always same!!! 
-        //printf("%d %d ", tid, &states_d[tid]);
+
+        //printf("%d, %.5f, %d\n", &states_d[tid], curand_uniform(&states_d[tid]), randNum);
         for(int c=0; c<num_cities; c++) {
             tournament[i*num_cities + c] = population_d[randNum*num_cities + c];
             tournament_cost[i] = population_cost_d[randNum];
@@ -114,6 +117,7 @@ __device__ int* tournamentSelection(int* population_d, float* population_cost_d,
     int fittest_route[num_cities];
     for(int c=0; c<num_cities; c++) {
         fittest_route[c] = tournament[fittest*num_cities + c];
+        //printf("%d ", fittest_route[c]);
     }
     //printf("\n");
     return fittest_route;
@@ -139,8 +143,13 @@ __global__ void geneticAlgorithmGeneration(
     for(int c=0; c<num_cities; c++)
         parent_cities_d[tid* (2*num_cities) +num_cities +c] = parent1[c];
 
+
+
+    printf("before %d -> ", tid);
+    for(int c=0; c<num_cities; c++)
+        printf("%d ", population_d[tid*num_cities+c]);
+    printf("\n");
     /*
-       //NOTE: parents are mostly same for all now
     printf("citis:\n");
     for(int c=0; c<num_cities; c++)
         printf("%d ", population_d[tid* num_cities + c]);

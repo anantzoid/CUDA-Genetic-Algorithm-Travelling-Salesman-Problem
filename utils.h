@@ -60,8 +60,7 @@ __device__ int find_city(int current_city_id, int* tour, int local_num_cities) {
 }
 
 __device__ int getCityN(int n, int* parent_cities_ptr) {
-    for (int i = 0; i < num_cities; i++)
-    {
+    for (int i = 0; i < num_cities; i++) {
         if (parent_cities_ptr[i] == n)
             return parent_cities_ptr[i];
     }
@@ -73,8 +72,9 @@ __device__ int getCityN(int n, int* parent_cities_ptr) {
 }
 
 __device__ int getValidNextCity(int* parent_cities_ptr, int* tourarray, int current_city_id, int index) {    
-    
-    int local_city_index = current_city_id;//find_city(current_city_id, parent_cities_ptr, num_cities);
+   
+    //finding current city in parent 
+    int local_city_index = find_city(current_city_id, parent_cities_ptr, num_cities);
 
     // search for first valid city (not already in child) 
     // occurring after currentCities location in parent tour
@@ -112,3 +112,20 @@ int getFittestScore(float* population_fitness) {
     } 
     return fittest; 
 }
+
+__device__ int getFittestTourIndex(int* tournament, float* tournament_cost,
+        float* tournament_fitness) {
+    int fittest = 0;
+    float fitness = tournament_fitness[0];
+
+    for (int i = 1; i < tournament_size-1; i++) {
+        //printf("%.6f\n", tournament_fitness[i]);
+        if (tournament_fitness[i] >= fitness) {
+            fittest = i;
+            fitness = tournament_fitness[i];        
+        }
+    }
+    return fittest;
+}
+
+
