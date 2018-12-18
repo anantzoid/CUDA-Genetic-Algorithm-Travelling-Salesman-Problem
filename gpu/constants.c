@@ -1,11 +1,11 @@
 // Kernel config
 // Grid size
-const int num_blocks = 32;
+const int num_blocks = 1024;
 const int num_threads = 256;
 const int ISLANDS =  num_blocks * num_threads;
 
 // GA config
-const int num_generations = 21;
+const int num_generations = 5;
 const float mutation_ratio= 0.05;
 const int print_interval = 100;
 

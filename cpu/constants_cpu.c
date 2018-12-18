@@ -1,14 +1,14 @@
 // Kernel config
 // Grid size
-const int ISLANDS =  96;
+const int ISLANDS =  262144;
 
 // GA config
-const int num_generations = 50;
+const int num_generations = 100;
 const float mutation_ratio= 0.05;
-const int print_interval = 1;
+const int print_interval = 100;
 
 const int num_cities = 52;
-const int tournament_size = 50;
+const int tournament_size = 128;
 #define ELITISM    false
 
 //const float city_x[] = {565,25,345,945,845,880,25,525,580,650};

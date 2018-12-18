@@ -1,3 +1,13 @@
+/*
+ * This is the sequential version of the task
+ * Apart from each kernel looping over all the candidates, the code is 
+ * same as GPU version but more messy and undocumented.
+ * 
+ * For understanding the code please see ../gpu/main.cu
+ * Even though these scripts are pretty much same, they were kept separate
+ * for ease of experimentation.
+ */
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
