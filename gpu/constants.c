@@ -1,16 +1,16 @@
 // Kernel config
 // Grid size
-const int num_blocks = 1024;
-const int num_threads = 256;
+const int num_blocks = 1;
+const int num_threads = 96;
 const int ISLANDS =  num_blocks * num_threads;
 
 // GA config
-const int num_generations = 5;
+const int num_generations = 50;
 const float mutation_ratio= 0.05;
 const int print_interval = 100;
 
 const int num_cities = 52;
-const int tournament_size = 128;
+const int tournament_size = 50;
 //#define ELITISM    false
 
 //const float city_x[] = {565,25,345,945,845,880,25,525,580,650};
