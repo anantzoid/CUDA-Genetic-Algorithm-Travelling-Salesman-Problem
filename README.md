@@ -1,9 +1,7 @@
-#Solving Travelling Salesman Problem using Parallel Genetic Algorithm
-
-## Anant Gupta (ag4508)
+# Solving Travelling Salesman Problem using Parallel Genetic Algorithm
 ---
 ### Compiling the code
-On cuda1 or cuda5:
+Assuming a Kepler architecture,
 
 ```
 cd gpu
@@ -24,5 +22,5 @@ Each of the versions are very similar to each other and structured as follows:
 * `utils.h`: Contains utils functions for the kernels
 * `constants.c`: Declares all the hyperparemeters
 
-For documentation on how the code runs, please check out each individual file in `gpu/`. They're cleaned and documented.
+For documentation on how the code runs, please check out each individual file in `gpu/`.
 
